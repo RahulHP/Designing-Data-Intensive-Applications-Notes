@@ -123,3 +123,70 @@ there. If the page can't accommodate the new data, split it into 2 new pages
 ## Comparing B-Trees and LSM-Trees
 
 TODO
+
+# Transaction Processing or Analytics
+- Transaction - `A group of reads and writes that form a logical unit`
+- ACID - Atomicity, Consistency, Isolation, Durability
+- OLTP - Online Transaction Processing
+- OLAP - Online Analytics Processing
+- Data Warehouse - `Separate database used to run analytics`
+
+| Property      | OLTP                                    | OLAP                               |
+|---------------|-----------------------------------------|------------------------------------|
+| Read Pattern  | Few records per key, fetched by queries | Aggregation over *lots* of records |
+| Write Pattern | User input, random-access, low-latency  | ETL pipeline or streams            |
+| Primary Users | End user, customer                      | Analysts                           |
+| Data time?    | Latest data                             | Historical data                    |
+| Size          | GB - TB                                 | TB - PB                            |
+
+Need for data warehouse? OLTP systems need low-latency writes for end customers. But if analysts run long-running queries, this'll slow the database down and degrade performance for end customers. So data warehouses are used instead by analysts. This is a read-only copy of the OLTP data.
+
+ETL pipelines are used to extract data from OLTP databases, transform it and load it into the data warehouse. OLAP queries use different set of indexes than those used by OLTP. So the data warehouse can be designed to support these indexes instead to improve performance.
+
+
+## Stars and Snowflakes
+Dimensional modelling - fact tables and dimension tables related using keys. Fact tables can be individual events (the smallest granularity possible for maximum flexibility of analysis). Columns in fact tables can be foreign keys to tables in dimension tables.
+
+`As each row in the fact table represents an event, the dimensions represent the who, what, where, when, how, and why of the event.`
+```
+The name “star schema” comes from the fact that when the table relationships are
+visualized, the fact table is in the middle, surrounded by its dimension tables; the
+connections to these tables are like the rays of a star.
+```
+Snowflake schema are a 'deeper' version of a star schema where dimension tables have subdimension tables.
+
+## Column Oriented Storage
+OLTP databases are in stored a _row-oriented_ fashion, where all values in a row are stored together.
+
+Suppose an analyst wants to run the query `select product_id, sum(quantity) from sales group by product_id where month="Jan"`. Only the 3 columns month, product_id and quantity are required.
+
+But in a row-oriented table, the engine will have to load all the rows from memory to disk, then filter out the rows where month != "Jan" and then proceed. This will take a long time.
+
+In a _column-oriented_ database, the values from each _column_ are stored together, not on a _row_ basis. Therefore, if a 'column-oriented' database was used, only records from the 3 columns would be read and filtered on.
+
+### Column Compression
+#### Bitmap encoding
+This can be used to compress data in a column-oriented database.
+
+As of now, there are only 12 months in a year. A retailer probably has around 100,000 distinct products but billions of sale transactions.
+
+```
+We can now take a column with n distinct values and turn it into n separate bitmaps: one bitmap for each distinct value, with one bit for each row. The bit is 1 if the row has that value, and 0 if not.
+
+If n is very small, those bitmaps can be stored with one bit per row. But if n is bigger, there will be a lot of zeros in most of the bitmaps (we say that they are sparse). In that case, the bitmaps can additionally be run-length encoded, resulting in even more compression.
+```
+
+These bitmaps can also help in faster queries. If the query includes `where product_id in (10,25,30)`, calculate the bitwise OR of the 3 bitmaps (product_id=10, product_id=25, product_id=30) to get the rows required.
+
+#### Sort order
+Data modeler can choose the column to sort a database by. This can make queries faster e.g. if a query wants to look at records from last 30 days, ordering the table by date will improve the speed (since the database will only need to scan the latest records)
+
+This will also help in compression. If tables are sorted by dates, records with same dates will be together which will result in smaller run-length encoded bitmaps.
+
+#### Writing to Column-Oriented Storage
+Inserting rows in the middle of a sorted table is difficult since all column records will have to be updated. So an LSM-Tree is used - all writes go to an in-memory store which is then written to disk in bulk.
+
+### Aggregation: Data Cubes and Materialised Views
+For common aggregations like sum/count/min/max, do the queries once and write the results to disk. These can then be used directly instead of running the same queries multiple times. This can improve read performance (if the right view is used) at the cost of decreasing write performance (since the view has to be updated frequently).
+
+This doesn't improve all queries (such as summing over a portion of data) but it can be a Performance boost for common queries.
