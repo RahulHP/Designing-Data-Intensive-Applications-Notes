@@ -27,7 +27,7 @@ Concatenate a random integer (say 1-100) before/after each key to distribute it 
 
 This results in additional work for reading queries, since each query will now have to get data from 100 partitions and combine it together. So instead of doing randint() for all keys, only do it for the hot keys.
 
-This also needs additional bookkeeping - The system has to track which keys are hot and need this randint() annd which keys do not need it.
+This also needs additional bookkeeping - The system has to track which keys are hot and need this randint() and which keys do not need it.
 
 ## Secondary Indexes
 For this section, assume that we are operating a website for selling used cars. Each listing has a `document ID` and each car has `color` and `make`. The database is partitioned by document ID. The user should be able to query by `color` and `make`.
@@ -53,3 +53,44 @@ Requirements:
 - Data transfer should be minimized to reduce time taken and network I/O
 
 ### Rebalancing Strategies
+Preferred way - Divide all possible hashes into ranges and assign each range to a partition
+#### Wrong way - hash mod N
+_hash(key) % N_ (N: number of nodes) does not work because if N changes, we'll have to shuffle keys between nodes. eg. with N=5, key=12 goes to partition number 2 (12%5=2) but if N increases to 6, the key has to be moved to partition number 0 (12%6=0). This frequent movement makes rebalancing expensive.
+
+#### Better way - Fixed number of partitions
+Assign several partitions to each node e.g if we have 10 nodes, create 1,000 partitions in the beginning and assign ~100 partitions to each node.
+
+- Now if a new node is added, assign a few of those 100 partitions from each node to the new partition. So each node now has ~90 partitions.
+- If a node is removed, do the reverse. Distribute its partitions among the existing nodes.
+While this addition/deletion of nodes is going on, the old partition-to-node mapping can be used. Only entire partitions are moved, the key-to-partition mapping and number of partitions doesn't change. Only partition-to-node mapping changes.
+
+Improvement - More partitions can be assigned to more powerful nodes to account for hardware differences.
+
+#### Dynamic Partitioning
+Maintain a partition-node mapping. If the size of a partition exceeds a threshold, split it into 2 partitions and send it to another node. If the size becomes too small, combine it with an adjacent partition.
+
+Benefit - If data size is small, only a few partitions are required resulting in small overhead. If data size increases, number of partitions can increase as needed.
+
+#### Partitioning proportionally to nodes
+Assign a _fixed_ number of partitions to each node. As dataset size increases, number of partitions stays constant, only partition size increases.
+
+If a new node is added, it randomly chooses a fixed number of partitions and takes ownership of half their data.
+
+### Rebalancing : Automatic or Manual?
+`fully automatic rebalancing - the system decides automatically when to move partitions from one node to another, without any administrator interaction`
+
+`fully manual - the assignment of partitions to nodes is explicitly configured by an administrator, and only changes when the administrator explicitly reconfigures it`
+
+Rebalancing is expensive and needs lot of network bandwidth to shuffle data. Fully automatic is unpredictable and cause unintended domino effects. e.g if a node temporarily slows down, other nodes will think it is dead and start the rebalancing process. i.e. They will try to move load away from the slow node. This data shuffling will cause additional load on the slow node and other nodes - making the situation worse.
+
+So, it is good to have a human confirm things before rebalancing. This avoids surprises.
+
+### Request Routing
+How does the client know which node to query for a given key? 3 possible ways:
+1. Round-robin - Client asks any node in network. If the node has the data, it sends a response directly. Otherwise, it forwards the request to correct node and sends the reply back to client
+2. Routing tier - This service knows the key-partition-node mapping and redirects request to correct node
+3. Client-side - Client stays aware of the partition-node mapping and directly contacts the correct node
+
+Then how does the object in all 3 cases (node, routing service or client) know the correct mapping? This job is done by a coordination service such as **ZooKeeper**.
+
+ZooKeeper maintains the _authoritative_  partition-node mapping. Other objects subscribe to ZooKeeper for changes so that they are kept up-to-date.
